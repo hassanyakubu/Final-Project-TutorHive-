@@ -49,6 +49,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_user'])) {
     }
 }
 
+// Handle delete user request
+if (isset($_GET['delete_id'])) {
+    // Verify CSRF token
+    if (!isset($_GET['csrf_token']) || !verify_csrf_token($_GET['csrf_token'])) {
+        $error_message = "Invalid CSRF token. Please try again.";
+    } else {
+        try {
+            $delete_id = filter_var($_GET['delete_id'], FILTER_VALIDATE_INT);
+            
+            // Validate delete_id
+            if ($delete_id === false || $delete_id <= 0) {
+                throw new Exception("Invalid user ID.");
+            }
+            
+            // Don't allow deleting yourself
+            if ($delete_id == $_SESSION['user_id']) {
+                throw new Exception("You cannot delete your own account.");
+            }
+            
+            // Check if user exists before attempting to delete
+            $check_user_sql = "SELECT user_id FROM Users WHERE user_id = ?";
+            $check_stmt = $conn->prepare($check_user_sql);
+            $check_stmt->bind_param("i", $delete_id);
+            $check_stmt->execute();
+            $check_result = $check_stmt->get_result();
+            
+            if ($check_result->num_rows === 0) {
+                throw new Exception("User does not exist.");
+            }
+            
+            // Prepare delete statement
+            $delete_sql = "DELETE FROM Users WHERE user_id = ?";
+            $stmt = $conn->prepare($delete_sql);
+            $stmt->bind_param("i", $delete_id);
+            
+            // Execute delete
+            if ($stmt->execute()) {
+                // Check if any rows were actually deleted
+                if ($stmt->affected_rows > 0) {
+                    $_SESSION['success_message'] = "User deleted successfully!";
+                } else {
+                    $_SESSION['error_message'] = "No user was deleted. The user may have already been removed.";
+                }
+            } else {
+                throw new Exception("Database error: " . $stmt->error);
+            }
+            
+            // Redirect to prevent form resubmission
+            header("Location: admin_dashboard.php");
+            exit();
+            
+        } catch (Exception $e) {
+            // Store error in session to display after redirect
+            $_SESSION['error_message'] = $e->getMessage();
+            header("Location: admin_dashboard.php");
+            exit();
+        }
+    }
+}
+
 // Fetch analytics data
 $sql_analytics = "SELECT 
     (SELECT COUNT(*) FROM Users) as total_users,
@@ -80,33 +140,6 @@ if ($result_users->num_rows > 0) {
     }
 }
 
-// Handle delete user request
-if (isset($_GET['delete_id'])) {
-    try {
-        $delete_id = filter_var($_GET['delete_id'], FILTER_SANITIZE_NUMBER_INT);
-        
-        // Don't allow deleting yourself
-        if ($delete_id == $_SESSION['user_id']) {
-            throw new Exception("You cannot delete your own account.");
-        }
-        
-        $delete_sql = "DELETE FROM Users WHERE user_id = ?";
-        $stmt = $conn->prepare($delete_sql);
-        $stmt->bind_param("i", $delete_id);
-        
-        if ($stmt->execute()) {
-            $success_message = "User deleted successfully!";
-            // Refresh the page to update the user list
-            header("Location: admin_dashboard.php");
-            exit();
-        } else {
-            throw new Exception("Failed to delete user.");
-        }
-    } catch (Exception $e) {
-        $error_message = $e->getMessage();
-    }
-}
-
 // Generate CSRF token for forms
 $csrf_token = generate_csrf_token();
 ?>
@@ -134,7 +167,21 @@ $csrf_token = generate_csrf_token();
     <main>
         <h1>Admin Dashboard</h1>
 
-        <?php if (!empty($error_message)): ?>
+        <?php 
+        // Display success message
+        if (isset($_SESSION['success_message'])) {
+            echo '<div class="alert alert-success">' . htmlspecialchars($_SESSION['success_message']) . '</div>';
+            unset($_SESSION['success_message']);
+        }
+
+        // Display error message
+        if (isset($_SESSION['error_message'])) {
+            echo '<div class="alert alert-danger">' . htmlspecialchars($_SESSION['error_message']) . '</div>';
+            unset($_SESSION['error_message']);
+        }
+
+        // Existing error message handling
+        if (!empty($error_message)): ?>
             <div class="error"><?php echo htmlspecialchars($error_message); ?></div>
         <?php endif; ?>
 
@@ -192,7 +239,7 @@ $csrf_token = generate_csrf_token();
                                 <td>
                                     <button class="action-button edit" onclick='editUser(<?php echo json_encode($user); ?>)'>Edit</button>
                                     <?php if ($user['user_id'] != $_SESSION['user_id']): ?>
-                                        <a href="admin_dashboard.php?delete_id=<?php echo $user['user_id']; ?>" 
+                                        <a href="admin_dashboard.php?delete_id=<?php echo $user['user_id']; ?>&csrf_token=<?php echo $csrf_token; ?>" 
                                            class="action-button decline"
                                            onclick="return confirm('Are you sure you want to delete this user?')">Delete</a>
                                     <?php endif; ?>

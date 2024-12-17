@@ -27,12 +27,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         error_log("Rate limit check passed");
 
         // Validate and sanitize input
-        $name = filter_var(trim($_POST['name']), FILTER_SANITIZE_STRING);
+        $name = htmlspecialchars(trim($_POST['name']), ENT_QUOTES, 'UTF-8');
         $email = filter_var(trim($_POST['email']), FILTER_SANITIZE_EMAIL);
         $password = trim($_POST['password']);
         $confirm_password = trim($_POST['confirm_password']);
-        $role = filter_var(trim($_POST['role']), FILTER_SANITIZE_STRING);
-        $bio = filter_var(trim($_POST['bio'] ?? ''), FILTER_SANITIZE_STRING);
+        $role = htmlspecialchars(trim($_POST['role']), ENT_QUOTES, 'UTF-8');
+        $bio = htmlspecialchars(trim($_POST['bio'] ?? ''), ENT_QUOTES, 'UTF-8');
 
         error_log("Input data: name=$name, email=$email, role=$role");
 
@@ -98,82 +98,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             // Create upload directory if it doesn't exist
-            $upload_dir = __DIR__ . '/../uploads/profile_pictures/';
+            $upload_dir = dirname(__DIR__) . '/uploads/profile_pictures/';
             if (!file_exists($upload_dir)) {
-                if (!mkdir($upload_dir, 0755, true)) {
-                    throw new Exception('Failed to create upload directory.');
+                if (!@mkdir($upload_dir, 0755, true)) {
+                    error_log("Failed to create directory: " . error_get_last()['message']);
+                    throw new Exception('Failed to create upload directory. Please contact administrator.');
                 }
             }
 
+            // Check if directory is writable
             if (!is_writable($upload_dir)) {
-                throw new Exception('Upload directory is not writable.');
+                error_log("Upload directory is not writable: $upload_dir");
+                throw new Exception('Upload directory is not writable. Please contact administrator.');
             }
 
-            // Generate unique filename
-            $extension = strtolower(pathinfo($_FILES['profile_picture']['name'], PATHINFO_EXTENSION));
-            $filename = uniqid('profile_', true) . '.' . $extension;
-            $upload_path = $upload_dir . $filename;
+            // Generate unique filename with timestamp to avoid conflicts
+            $timestamp = time();
+            $file_extension = strtolower(pathinfo($_FILES['profile_picture']['name'], PATHINFO_EXTENSION));
+            $profile_picture = $timestamp . '_' . uniqid() . '.' . $file_extension;
+            $target_path = $upload_dir . $profile_picture;
 
-            // Save file and store relative path in database
-            if (!move_uploaded_file($_FILES['profile_picture']['tmp_name'], $upload_path)) {
-                error_log("Failed to move uploaded file from {$_FILES['profile_picture']['tmp_name']} to {$upload_path}");
-                throw new Exception('Failed to upload profile picture. Please try again.');
+            // Move uploaded file
+            if (!@move_uploaded_file($_FILES['profile_picture']['tmp_name'], $target_path)) {
+                $error = error_get_last();
+                error_log("Failed to move uploaded file: " . ($error ? $error['message'] : 'Unknown error'));
+                throw new Exception('Failed to save uploaded file. Please try again.');
             }
 
-            // Store relative path in database
-            $profile_picture = 'uploads/profile_pictures/' . $filename;
+            // Store the relative path in database
+            $profile_picture = 'uploads/profile_pictures/' . $profile_picture;
         }
-        error_log("Profile picture processed successfully");
-
-        // Check if email already exists
-        $stmt = $conn->prepare("SELECT COUNT(*) FROM Users WHERE email = ?");
-        if (!$stmt) {
-            error_log("Prepare failed: " . $conn->error);
-            throw new Exception('Database error occurred.');
-        }
-        
-        $stmt->bind_param("s", $email);
-        if (!$stmt->execute()) {
-            error_log("Execute failed: " . $stmt->error);
-            throw new Exception('Database error occurred.');
-        }
-        
-        $stmt->bind_result($count);
-        $stmt->fetch();
-        $stmt->close();
-
-        if ($count > 0) {
-            throw new Exception('Email already registered.');
-        }
-        error_log("Email uniqueness check passed");
 
         // Hash password
         $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-        error_log("Password hashed successfully");
 
-        // Insert new user
-        $sql = "INSERT INTO Users (name, email, password, role, profile_picture, bio) VALUES (?, ?, ?, ?, ?, ?)";
-        error_log("Preparing SQL: $sql");
-        
-        $stmt = $conn->prepare($sql);
-        if (!$stmt) {
-            error_log("Prepare failed: " . $conn->error);
-            throw new Exception('Database error occurred.');
-        }
+        // Prepare SQL statement
+        $stmt = $conn->prepare("INSERT INTO Users (name, email, password, role, bio, profile_picture) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("ssssss", $name, $email, $hashed_password, $role, $bio, $profile_picture);
 
-        $stmt->bind_param("ssssss", $name, $email, $hashed_password, $role, $profile_picture, $bio);
-        error_log("Parameters bound successfully");
-
+        // Execute the statement
         if (!$stmt->execute()) {
-            error_log("Execute failed: " . $stmt->error);
-            throw new Exception('Failed to create account: ' . $stmt->error);
+            throw new Exception($stmt->error);
         }
-        error_log("User inserted successfully");
 
-        $stmt->close();
-        $conn->close();
-
-        // Set success message and redirect
         $_SESSION['registration_success'] = "Registration successful! Please login with your credentials.";
         error_log("Registration completed successfully, redirecting to login page");
         
